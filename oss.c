@@ -7,6 +7,7 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <string.h>
+#include <time.h> // For random runtime generation
 
 #define MAX_PCB 20
 #define BILLION 1000000000
@@ -40,17 +41,19 @@ int main(int argc, char *argv[]) {
     int s = -1;          // max simultaneous
     double t = -1;       // child runtime (float seconds)
     double i = -1;       // interval between launches (float seconds)
+    FILE *f = NULL;    // log file pointer
 
     // Parse command line arguments
-    while ((opt = getopt(argc, argv, "hn:s:t:i:")) != -1) {
+    while ((opt = getopt(argc, argv, "hn:s:t:i:f:")) != -1) {
         switch (opt) {
             case 'h':
-                printf("Usage: %s [-h] [-n proc] [-s simul] [-t timelimitForChildren] [-i intervalInSecondsToLaunchChildren]\n", argv[0]);
+                printf("Usage: %s [-h] [-n proc] [-s simul] [-t timelimitForChildren] [-i intervalInSecondsToLaunchChildren] [-f logfile]\n", argv[0]);
                 printf("  -h: Display this help message and exit\n");
                 printf("  -n proc   Total number of child processes to launch\n");
-				        printf("  -s simul  Maximum number of children running simultaneously\n");
-				        printf("  -t iter   The amount of simulated time each child runs\n");
+				printf("  -s simul  Maximum number of children running simultaneously\n");
+				printf("  -t iter   Upper bound of simulated time each child runs\n");
                 printf("  -i sec    Interval in simulated seconds to launch new children\n");
+                printf("  -f file   Log output to specified file\n");
                 return 0;
             case 'n':
                 n = atoi(optarg);
@@ -64,13 +67,22 @@ int main(int argc, char *argv[]) {
             case 'i':
                 i = atof(optarg);
                 break;
+            case 'f':
+                // log file
+                f = fopen(optarg, "w");
+                if (f == NULL) {
+                    fprintf(stderr, "Failed to open log file %s\n", optarg);
+                    return 1;
+                }
+                break;
             default:
-                printf("Usage: %s [-h] [-n proc] [-s simul] [-t timelimitForChildren] [-i intervalInSecondsToLaunchChildren]\n", argv[0]);
+                printf("Usage: %s [-h] [-n proc] [-s simul] [-t timelimitForChildren] [-i intervalInSecondsToLaunchChildren] [-f logfile]\n", argv[0]);
                 printf("  -h: Display this help message and exit\n");
                 printf("  -n proc   Total number of child processes to launch\n");
-				        printf("  -s simul  Maximum number of children running simultaneously\n");
-				        printf("  -t iter   The amount of simulated time each child runs\n");
+				printf("  -s simul  Maximum number of children running simultaneously\n");
+				printf("  -t iter   Upper bound of simulated time each child runs\n");
                 printf("  -i sec    Interval in simulated seconds to launch new children\n");
+                printf("  -f file   Log output to specified file\n");
                 return 1;
         }
     }
@@ -81,8 +93,12 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // Print initial configuration
     printf("OSS starting, PID:%d PPID:%d\n", getpid(), getppid());
     printf("Called with:\n-n %d\n-s %d\n-t %.3f\n-i %.3f\n\n", n, s, t, i);
+    // Log initial configuration to file if specified
+    fprintf(f, "OSS starting, PID:%d PPID:%d\n", getpid(), getppid());
+    fprintf(f, "Called with:\n-n %d\n-s %d\n-t %.3f\n-i %.3f\n\n", n, s, t, i);
 
     // Setup signal handling
     signal(SIGINT, cleanup);
@@ -115,10 +131,7 @@ int main(int argc, char *argv[]) {
     *sec = 0;
     *nano = 0;
 
-    // Convert runtime and interval to sec/nano
-    int run_sec = (int)t;
-    int run_nano = (int)((t - run_sec) * BILLION);
-
+    // Convert interval to sec/nano
     int interval_sec = (int)i;
     int interval_nano = (int)((i - interval_sec) * BILLION);
 
@@ -130,6 +143,7 @@ int main(int argc, char *argv[]) {
         int start_nanosec; // Start time in nanoseconds
         int end_sec; // Ending time in seconds
         int end_nano; // Ending time in nanoseconds
+        int messages_sent; // Total times oss sent message to this child
     };
 
     struct PCB table[MAX_PCB];
@@ -139,6 +153,7 @@ int main(int argc, char *argv[]) {
 
     int running = 0;
     int total_launched = 0;
+    int total_messages_sent = 0;
 
     int last_launch_sec = 0;
     int last_launch_nano = 0;
@@ -146,20 +161,23 @@ int main(int argc, char *argv[]) {
     // Main scheduling loop
     while (total_launched < n || running > 0) {
 
-        // Increment simulated clock
-        *nano += 1000;   // 0.001ms
+        // Increment the clock by 250ms divided by the number of current children.
+        *nano += 250000000 / (running > 0 ? running : 1);
         if (*nano >= BILLION) {
             (*sec)++;
             *nano -= BILLION;
         }
 
-        // Print process table every 0.5 seconds
+        // Print and log process table every 0.5 seconds
         if (*nano % 500000000 == 0) {
 
             printf("\nOSS PID:%d SysClockS:%d SysClockNano:%d\n",
                    getpid(), *sec, *nano);
+            fprintf(f, "\nOSS PID:%d SysClockS:%d SysClockNano:%d\n",
+                   getpid(), *sec, *nano);
 
             printf("Entry Occupied PID StartS StartN EndS EndN\n");
+            fprintf(f, "Entry Occupied PID StartS StartN EndS EndN\n");
 
             for (int j = 0; j < MAX_PCB; j++) {
                 printf("%2d %8d %6d %6d %6d %6d %6d\n",
@@ -169,7 +187,17 @@ int main(int argc, char *argv[]) {
                        table[j].start_sec,
                        table[j].start_nanosec,
                        table[j].end_sec,
-                       table[j].end_nano);
+                       table[j].end_nano,
+                       table[j].messages_sent);
+                fprintf(f, "%2d %8d %6d %6d %6d %6d %6d\n",
+                       j,
+                       table[j].occupied,
+                       table[j].pid,
+                       table[j].start_sec,
+                       table[j].start_nanosec,
+                       table[j].end_sec,
+                       table[j].end_nano,
+                       table[j].messages_sent);
             }
         }
 
@@ -220,6 +248,14 @@ int main(int argc, char *argv[]) {
                 pid_t child = fork();
 
                 if (child == 0) {
+                    // Generate random runtime for child between 1 second and t seconds
+                    srand(time(NULL) ^ (getpid()<<16)); // Seed with time and PID
+                    double random_runtime = 1 + ((double)rand() / RAND_MAX) * (t - 1);
+
+                    // Convert runtime to sec/nano
+                    int run_sec = (int)random_runtime;
+                    int run_nano = (int)((random_runtime - run_sec) * BILLION);
+
                     char secStr[20], nanoStr[20];
                     sprintf(secStr, "%d", run_sec);
                     sprintf(nanoStr, "%d", run_nano);
@@ -257,6 +293,11 @@ int main(int argc, char *argv[]) {
     // Final Report
     printf("\nOSS PID:%d Terminating\n", getpid());
     printf("%d workers were launched and terminated\n", total_launched);
+    printf(" %d messages were sent to children\n", total_messages_sent);
+    // Log final report to file
+    fprintf(f, "\nOSS PID:%d Terminating\n", getpid());
+    fprintf(f, "%d workers were launched and terminated\n", total_launched);
+    fprintf(f, " %d messages were sent to children\n", total_messages_sent);
 
     // Cleanup
     shmdt(clockptr);
