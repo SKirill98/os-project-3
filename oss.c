@@ -8,7 +8,10 @@
 #include <signal.h>
 #include <string.h>
 #include <time.h> // For random runtime generation
+#include <errno.h>
+#include <sys/msg.h>
 
+#define PERMS 0700
 #define MAX_PCB 20
 #define BILLION 1000000000
 
@@ -34,6 +37,12 @@ void cleanup(int sig) {
     exit(1);
 }
 
+// Message buffer structure for message queue communication
+typedef struct msgbuffer {
+    long mtype;
+    int intData;
+} msgbuffer;
+
 int main(int argc, char *argv[]) {
 
     int opt;
@@ -42,6 +51,21 @@ int main(int argc, char *argv[]) {
     double t = -1;       // child runtime (float seconds)
     double i = -1;       // interval between launches (float seconds)
     FILE *f = NULL;    // log file pointer
+    system("touch msgq.txt"); // Ensure the file exists for ftok
+    int msqid;
+    key_t msg_key;
+
+    // get a key for our message queue
+    if ((msg_key = ftok("msgq.txt", 1)) == -1) {
+        perror("ftok");
+        exit(1);
+    }
+    // Create message queue
+    if ((msqid = msgget(msg_key, PERMS | IPC_CREAT)) == -1) {
+        perror("msgget in parent");
+        exit(1);
+    }
+    printf("Message queue created with ID: %d\n", msqid);
 
     // Parse command line arguments
     while ((opt = getopt(argc, argv, "hn:s:t:i:f:")) != -1) {
@@ -92,6 +116,9 @@ int main(int argc, char *argv[]) {
         printf("Usage: %s [-h] [-n proc] [-s simul] [-t timelimitForChildren] [-i intervalInSecondsToLaunchChildren]\n", argv[0]);
         return 1;
     }
+
+    // Store Pids of children
+    pid_t child[n];
 
     // Print initial configuration
     printf("OSS starting, PID:%d PPID:%d\n", getpid(), getppid());
@@ -158,6 +185,11 @@ int main(int argc, char *argv[]) {
     int last_launch_sec = 0;
     int last_launch_nano = 0;
 
+    pid_t next_child_pid = 0;
+
+    int current = -1;
+    msgbuffer msg;
+
     // Main scheduling loop
     while (total_launched < n || running > 0) {
 
@@ -167,6 +199,7 @@ int main(int argc, char *argv[]) {
             (*sec)++;
             *nano -= BILLION;
         }
+        
 
         // Print and log process table every 0.5 seconds
         if (*nano % 500000000 == 0) {
@@ -201,22 +234,54 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Non-blocking check for terminated child
-        int status;
-        pid_t pid = waitpid(-1, &status, WNOHANG);
+        // Choose next worker
+        int found = 0;
 
-        if (pid > 0) {
-            running--;
-
-            // Clear PCB entry
-            for (int j = 0; j < MAX_PCB; j++) {
-                if (table[j].occupied && table[j].pid == pid) {
-                    table[j].occupied = 0;
-                    break;
-                }
+        for(int k = 0; k < MAX_PCB; k++){
+            current = (current + 1) % MAX_PCB;
+            if(table[current].occupied){
+                found = 1;
+                break;
             }
         }
 
+        if(!found){ 
+            continue;
+        }
+
+        // Send message
+        msg.mtype = table[current].pid;
+        msg.intData = 1;
+
+        msgsnd(msqid, &msg, sizeof(int), 0);
+
+        printf("OSS: Sending message to worker %d PID %d at %d:%d\n",
+            current, table[current].pid, *sec, *nano);
+        fprintf(f, "OSS: Sending message to worker %d PID %d at %d:%d\n",
+            current, table[current].pid, *sec, *nano);
+        
+        table[current].messages_sent++;
+        total_messages_sent++;
+
+        // Recieve response
+        msgrcv(msqid, &msg, sizeof(int), 1, 0);
+
+        printf("OSS: Received message from worker %d PID %d\n",
+            current, table[current].pid);
+        fprintf(f, "OSS: Received message from worker %d PID %d\n",
+            current, table[current].pid);
+        
+        // Terminating Child
+        if(msg.intData == 0){
+            printf("OSS: Worker %d terminating\n", table[current].pid);
+            fprintf(f, "OSS: Worker %d terminating\n", table[current].pid);
+
+            waitpid(table[current].pid, NULL, 0);
+
+            table[current].occupied = 0;
+            running--;
+        }
+        
         // Check if enough interval time has passed
         int diff_sec = *sec - last_launch_sec;
         int diff_nano = *nano - last_launch_nano;
@@ -245,17 +310,17 @@ int main(int argc, char *argv[]) {
 
             if (index != -1) {
 
+                // Generate random runtime for child between 1 second and t seconds
+                srand(time(NULL) ^ (getpid()<<16)); // Seed with time and PID
+                double random_runtime = 1 + ((double)rand() / RAND_MAX) * (t - 1);
+
+                // Convert runtime to sec/nano
+                int run_sec = (int)random_runtime;
+                int run_nano = (int)((random_runtime - run_sec) * BILLION);
+                
                 pid_t child = fork();
 
                 if (child == 0) {
-                    // Generate random runtime for child between 1 second and t seconds
-                    srand(time(NULL) ^ (getpid()<<16)); // Seed with time and PID
-                    double random_runtime = 1 + ((double)rand() / RAND_MAX) * (t - 1);
-
-                    // Convert runtime to sec/nano
-                    int run_sec = (int)random_runtime;
-                    int run_nano = (int)((random_runtime - run_sec) * BILLION);
-
                     char secStr[20], nanoStr[20];
                     sprintf(secStr, "%d", run_sec);
                     sprintf(nanoStr, "%d", run_nano);
