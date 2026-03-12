@@ -9,8 +9,35 @@ const int BUFF_SZ = sizeof(int)*2;
 int shm_key;
 int shm_id;
 
+// Define PERMS
+#define PERMS 0700
+
+// Define message buffer structure for message queue communication
+typedef struct msgbuffer {
+    long mtype;
+    int intData;
+} msgbuffer;
+
 int main(int argc, char *argv[]) {
+    msgbuffer buf;
+    buf.mtype = 1; // Set message type to 1 for worker messages
+    int msqid = 0;
+    key_t msg_key;
+
+    // Get a key for our message queue
+    if ((msg_key = ftok("msgq.txt", 1)) == -1) {
+        perror("ftok");
+        exit(1);
+    }
     
+    // Create message queue
+    if ((msqid = msgget(msg_key, PERMS)) == -1) {
+        perror("msgget in child");
+        exit(1);
+    }
+
+    printf("Worker %d has access to the queue \n", getpid());
+
     if (argc != 3) {
         fprintf(stderr, "Usage: worker sec nonosec\n");
         exit(1);
@@ -62,20 +89,43 @@ int main(int argc, char *argv[]) {
 
     int last_printed_sec = start_sec;
 
+    int messages_recieved = 0;
+
+    // Main loop to check time and print status
     while (1) {
 
+        // Wait for a message from the parent befor checking time and printing status
+        if (msgrcv(msqid, &buf, sizeof(msgbuffer), getpid(), 0) == -1) {
+            perror("Failed to recieve message from parent\n");
+            exit(1);
+        }
+
+        // Output message from parent
+        printf("Worker %d recieved message: %s was my message and my int data was %d\n", getpid(), buf.strData, buf.intData);
+        messages_recieved++;
+
+        // Check the clock against the termination time
         if (*sec > term_sec || (*sec == term_sec && *nano >= term_nano)) {
             printf("WORKER PID:%d PPID:%d\n", getpid(), getppid());
             printf("SysClockS:%d SysClockNano:%d TermTimeS:%d TermTimeNano:%d\n", start_sec, start_nano, term_sec, term_nano);
-            printf("--Terminating\n");
+            printf("--Terminating after %d recieved messages.\n", messages_recieved);
             break;
         }
-
+        // Periodically print status every second
         if (*sec > last_printed_sec) {
             printf("WORKER PID:%d PPID:%d\n", getpid(), getppid());
             printf("SysClockS:%d SysClockNano:%d TermTimeS:%d TermTimeNano:%d\n", *sec, *nano, term_sec, term_nano);
-            printf("--%d seconds have passed since starting\n", *sec - start_sec);
+            printf("--%d messages recieved from oss\n", messages_recieved);
             last_printed_sec = *sec;
+        }
+
+        // Send a message back to the parent indicating termination
+        buf.mtype = getppid();
+        buf.intData = getppid();
+    
+        if (msgsnd(msqid, &buf, sizeof(msgbuffer)-sizeof(long), 0) == -1) {
+            perror("Failed to send msgsnd to parent.\n");
+            exit(1);
         }
     }
 
