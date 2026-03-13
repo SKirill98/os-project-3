@@ -14,4 +14,3 @@ $(WORKER): worker.c
 
 clean:
 	rm -f $(OSS) $(WORKER) *.o
-

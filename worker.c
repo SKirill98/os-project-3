@@ -4,6 +4,7 @@
 #include <sys/types.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#include <sys/msg.h>
 
 const int BUFF_SZ = sizeof(int)*2;
 int shm_key;
@@ -48,14 +49,14 @@ int main(int argc, char *argv[]) {
     
     
     // Shared memory
-    int shm_key = ftok("oss.c", 'R');
+    shm_key = ftok("oss.c", 'R');
     if (shm_key <= 0 ) {
         fprintf(stderr,"Child:... Error in ftok\n");
         exit(1);
     }
     
     // Create shared memory segment
-    int shm_id = shmget(shm_key,BUFF_SZ,0700);
+    shm_id = shmget(shm_key,BUFF_SZ, PERMS);
     if (shm_id <= 0 ) {
         fprintf(stderr,"child:... Error in shmget\n");
         exit(1);
@@ -93,15 +94,14 @@ int main(int argc, char *argv[]) {
 
     // Main loop to check time and print status
     while (1) {
+        buf.mtype = 1; // Set message type to 1 for worker messages
 
         // Wait for a message from the parent befor checking time and printing status
-        if (msgrcv(msqid, &buf, sizeof(msgbuffer), getpid(), 0) == -1) {
+        if (msgrcv(msqid, &buf, sizeof(msgbuffer)-sizeof(long), getpid(), 0) == -1) {
             perror("Failed to recieve message from parent\n");
             exit(1);
         }
-
-        // Output message from parent
-        printf("Worker %d recieved message: %s was my message and my int data was %d\n", getpid(), buf.strData, buf.intData);
+        
         messages_recieved++;
 
         // Check the clock against the termination time
@@ -109,23 +109,29 @@ int main(int argc, char *argv[]) {
             printf("WORKER PID:%d PPID:%d\n", getpid(), getppid());
             printf("SysClockS:%d SysClockNano:%d TermTimeS:%d TermTimeNano:%d\n", start_sec, start_nano, term_sec, term_nano);
             printf("--Terminating after %d recieved messages.\n", messages_recieved);
+            buf.intData = 0; // Set intData to 0 to indicate termination to the parent
+            
+            // Send a message back to the parent  
+            if (msgsnd(msqid, &buf, sizeof(msgbuffer)-sizeof(long), 0) == -1) {
+                perror("Failed to send msgsnd to parent.\n");
+                exit(1);
+            }
             break;
         }
+
         // Periodically print status every second
         if (*sec > last_printed_sec) {
             printf("WORKER PID:%d PPID:%d\n", getpid(), getppid());
             printf("SysClockS:%d SysClockNano:%d TermTimeS:%d TermTimeNano:%d\n", *sec, *nano, term_sec, term_nano);
             printf("--%d messages recieved from oss\n", messages_recieved);
             last_printed_sec = *sec;
-        }
-
-        // Send a message back to the parent indicating termination
-        buf.mtype = getppid();
-        buf.intData = getppid();
-    
-        if (msgsnd(msqid, &buf, sizeof(msgbuffer)-sizeof(long), 0) == -1) {
-            perror("Failed to send msgsnd to parent.\n");
-            exit(1);
+            buf.intData = 1; // Set intData to 1 to indicate still running to the parent
+        
+            // Send a message back to the parent  
+            if (msgsnd(msqid, &buf, sizeof(msgbuffer)-sizeof(long), 0) == -1) {
+                perror("Failed to send msgsnd to parent.\n");
+                exit(1);
+            }
         }
     }
 

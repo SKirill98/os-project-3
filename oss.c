@@ -51,7 +51,13 @@ int main(int argc, char *argv[]) {
     double t = -1;       // child runtime (float seconds)
     double i = -1;       // interval between launches (float seconds)
     FILE *f = NULL;    // log file pointer
-    system("touch msgq.txt"); // Ensure the file exists for ftok
+    // Create a file for ftok to use for message queue key generation
+    FILE *tmp = fopen("msgq.txt", "a");
+    if (tmp == NULL) {
+        perror("fopen msgq.txt");
+        exit(1);
+    }
+    fclose(tmp);
     int msqid;
     key_t msg_key;
 
@@ -72,10 +78,10 @@ int main(int argc, char *argv[]) {
         switch (opt) {
             case 'h':
                 printf("Usage: %s [-h] [-n proc] [-s simul] [-t timelimitForChildren] [-i intervalInSecondsToLaunchChildren] [-f logfile]\n", argv[0]);
-                printf("  -h: Display this help message and exit\n");
+                printf("  -h Display help message and exit\n");
                 printf("  -n proc   Total number of child processes to launch\n");
-				printf("  -s simul  Maximum number of children running simultaneously\n");
-				printf("  -t iter   Upper bound of simulated time each child runs\n");
+				        printf("  -s simul  Maximum number of children running simultaneously\n");
+				        printf("  -t iter   Upper bound of simulated time each child runs\n");
                 printf("  -i sec    Interval in simulated seconds to launch new children\n");
                 printf("  -f file   Log output to specified file\n");
                 return 0;
@@ -94,17 +100,13 @@ int main(int argc, char *argv[]) {
             case 'f':
                 // log file
                 f = fopen(optarg, "w");
-                if (f == NULL) {
-                    fprintf(stderr, "Failed to open log file %s\n", optarg);
-                    return 1;
-                }
                 break;
             default:
                 printf("Usage: %s [-h] [-n proc] [-s simul] [-t timelimitForChildren] [-i intervalInSecondsToLaunchChildren] [-f logfile]\n", argv[0]);
-                printf("  -h: Display this help message and exit\n");
+                printf("  -h Display help message and exit\n");
                 printf("  -n proc   Total number of child processes to launch\n");
-				printf("  -s simul  Maximum number of children running simultaneously\n");
-				printf("  -t iter   Upper bound of simulated time each child runs\n");
+				        printf("  -s simul  Maximum number of children running simultaneously\n");
+				        printf("  -t iter   Upper bound of simulated time each child runs\n");
                 printf("  -i sec    Interval in simulated seconds to launch new children\n");
                 printf("  -f file   Log output to specified file\n");
                 return 1;
@@ -114,12 +116,13 @@ int main(int argc, char *argv[]) {
     if (n <= 0 || s <= 0 || t <= 0 || i < 0) {
         fprintf(stderr, "Missing or invalid required arguments\n");
         printf("Usage: %s [-h] [-n proc] [-s simul] [-t timelimitForChildren] [-i intervalInSecondsToLaunchChildren]\n", argv[0]);
+        printf("-n value must be greater then 0. \n");
+        printf("-s value must be greater then 0. \n");
+        printf("-t value must be greater then 0. \n");
+        printf("-i value must be greater or equal to 0. \n");
         return 1;
     }
-
-    // Store Pids of children
-    pid_t child[n];
-
+    
     // Print initial configuration
     printf("OSS starting, PID:%d PPID:%d\n", getpid(), getppid());
     printf("Called with:\n-n %d\n-s %d\n-t %.3f\n-i %.3f\n\n", n, s, t, i);
@@ -133,13 +136,13 @@ int main(int argc, char *argv[]) {
     alarm(60);  // force terminate after 60 real seconds
 
     // Create shared memory
-    int shm_key = ftok("oss.c", 'R'); // Generate a unique key for shared memory
+    shm_key = ftok("oss.c", 'R'); // Generate a unique key for shared memory
     if (shm_key <= 0) {
         fprintf(stderr, "Parent: Failed to generate shared memory key (ftok failed)\n");
         return 1;
     }
 
-    int shm_id = shmget(shm_key, BUFF_SIZE, 0700|IPC_CREAT); // Create shared memory segment
+    shm_id = shmget(shm_key, BUFF_SIZE, PERMS|IPC_CREAT); // Create shared memory segment
     if (shm_id <= 0) {
         fprintf(stderr, "Parent: Failed to create shared memory segment (shmget failed)\n");
         return 1;
@@ -185,8 +188,6 @@ int main(int argc, char *argv[]) {
     int last_launch_sec = 0;
     int last_launch_nano = 0;
 
-    pid_t next_child_pid = 0;
-
     int current = -1;
     msgbuffer msg;
 
@@ -209,11 +210,11 @@ int main(int argc, char *argv[]) {
             fprintf(f, "\nOSS PID:%d SysClockS:%d SysClockNano:%d\n",
                    getpid(), *sec, *nano);
 
-            printf("Entry Occupied PID StartS StartN EndS EndN\n");
-            fprintf(f, "Entry Occupied PID StartS StartN EndS EndN\n");
+            printf("Entry Occupied PID StartS StartN EndS EndN MsgsSent\n");
+            fprintf(f, "Entry Occupied PID StartS StartN EndS EndN MsgsSent\n");
 
             for (int j = 0; j < MAX_PCB; j++) {
-                printf("%2d %8d %6d %6d %6d %6d %6d\n",
+                printf("%2d %8d %6d %6d %6d %6d %6d %6d\n",
                        j,
                        table[j].occupied,
                        table[j].pid,
@@ -222,7 +223,7 @@ int main(int argc, char *argv[]) {
                        table[j].end_sec,
                        table[j].end_nano,
                        table[j].messages_sent);
-                fprintf(f, "%2d %8d %6d %6d %6d %6d %6d\n",
+                fprintf(f, "%2d %8d %6d %6d %6d %6d %6d %6d\n",
                        j,
                        table[j].occupied,
                        table[j].pid,
@@ -253,7 +254,10 @@ int main(int argc, char *argv[]) {
         msg.mtype = table[current].pid;
         msg.intData = 1;
 
-        msgsnd(msqid, &msg, sizeof(int), 0);
+        if (msgsnd(msqid, &msg, sizeof(int), 0) == -1) {
+            perror("msgsnd failed");
+            exit(1);
+        }
 
         printf("OSS: Sending message to worker %d PID %d at %d:%d\n",
             current, table[current].pid, *sec, *nano);
@@ -311,7 +315,7 @@ int main(int argc, char *argv[]) {
             if (index != -1) {
 
                 // Generate random runtime for child between 1 second and t seconds
-                srand(time(NULL) ^ (getpid()<<16)); // Seed with time and PID
+                srand(time(NULL)); // Seed with time and PID
                 double random_runtime = 1 + ((double)rand() / RAND_MAX) * (t - 1);
 
                 // Convert runtime to sec/nano
@@ -367,6 +371,9 @@ int main(int argc, char *argv[]) {
     // Cleanup
     shmdt(clockptr);
     shmctl(shm_id, IPC_RMID, NULL);
+    if (f) {
+        fclose(f); // Close log file
+    }
 
     return 0;
 }
