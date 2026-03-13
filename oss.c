@@ -45,6 +45,7 @@ typedef struct msgbuffer {
 
 int main(int argc, char *argv[]) {
 
+    srand(time(NULL)); // Seed with time and PID
     int opt;
     int n = -1;          // total processes to launch
     int s = -1;          // max simultaneous
@@ -80,8 +81,8 @@ int main(int argc, char *argv[]) {
                 printf("Usage: %s [-h] [-n proc] [-s simul] [-t timelimitForChildren] [-i intervalInSecondsToLaunchChildren] [-f logfile]\n", argv[0]);
                 printf("  -h Display help message and exit\n");
                 printf("  -n proc   Total number of child processes to launch\n");
-				        printf("  -s simul  Maximum number of children running simultaneously\n");
-				        printf("  -t iter   Upper bound of simulated time each child runs\n");
+				printf("  -s simul  Maximum number of children running simultaneously\n");
+				printf("  -t iter   Upper bound of simulated time each child runs\n");
                 printf("  -i sec    Interval in simulated seconds to launch new children\n");
                 printf("  -f file   Log output to specified file\n");
                 return 0;
@@ -105,8 +106,8 @@ int main(int argc, char *argv[]) {
                 printf("Usage: %s [-h] [-n proc] [-s simul] [-t timelimitForChildren] [-i intervalInSecondsToLaunchChildren] [-f logfile]\n", argv[0]);
                 printf("  -h Display help message and exit\n");
                 printf("  -n proc   Total number of child processes to launch\n");
-				        printf("  -s simul  Maximum number of children running simultaneously\n");
-				        printf("  -t iter   Upper bound of simulated time each child runs\n");
+				printf("  -s simul  Maximum number of children running simultaneously\n");
+				printf("  -t iter   Upper bound of simulated time each child runs\n");
                 printf("  -i sec    Interval in simulated seconds to launch new children\n");
                 printf("  -f file   Log output to specified file\n");
                 return 1;
@@ -122,7 +123,7 @@ int main(int argc, char *argv[]) {
         printf("-i value must be greater or equal to 0. \n");
         return 1;
     }
-    
+
     // Print initial configuration
     printf("OSS starting, PID:%d PPID:%d\n", getpid(), getppid());
     printf("Called with:\n-n %d\n-s %d\n-t %.3f\n-i %.3f\n\n", n, s, t, i);
@@ -235,57 +236,6 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Choose next worker
-        int found = 0;
-
-        for(int k = 0; k < MAX_PCB; k++){
-            current = (current + 1) % MAX_PCB;
-            if(table[current].occupied){
-                found = 1;
-                break;
-            }
-        }
-
-        if(!found){ 
-            continue;
-        }
-
-        // Send message
-        msg.mtype = table[current].pid;
-        msg.intData = 1;
-
-        if (msgsnd(msqid, &msg, sizeof(int), 0) == -1) {
-            perror("msgsnd failed");
-            exit(1);
-        }
-
-        printf("OSS: Sending message to worker %d PID %d at %d:%d\n",
-            current, table[current].pid, *sec, *nano);
-        fprintf(f, "OSS: Sending message to worker %d PID %d at %d:%d\n",
-            current, table[current].pid, *sec, *nano);
-        
-        table[current].messages_sent++;
-        total_messages_sent++;
-
-        // Recieve response
-        msgrcv(msqid, &msg, sizeof(int), 1, 0);
-
-        printf("OSS: Received message from worker %d PID %d\n",
-            current, table[current].pid);
-        fprintf(f, "OSS: Received message from worker %d PID %d\n",
-            current, table[current].pid);
-        
-        // Terminating Child
-        if(msg.intData == 0){
-            printf("OSS: Worker %d terminating\n", table[current].pid);
-            fprintf(f, "OSS: Worker %d terminating\n", table[current].pid);
-
-            waitpid(table[current].pid, NULL, 0);
-
-            table[current].occupied = 0;
-            running--;
-        }
-        
         // Check if enough interval time has passed
         int diff_sec = *sec - last_launch_sec;
         int diff_nano = *nano - last_launch_nano;
@@ -302,7 +252,7 @@ int main(int argc, char *argv[]) {
         }
 
         // Launch new worker if allowed
-        if (running < s && total_launched < n && enough_time) {
+        if (running < s && total_launched < n && (total_launched == 0 || enough_time)){
 
             int index = -1;
             for (int j = 0; j < MAX_PCB; j++) {
@@ -315,7 +265,6 @@ int main(int argc, char *argv[]) {
             if (index != -1) {
 
                 // Generate random runtime for child between 1 second and t seconds
-                srand(time(NULL)); // Seed with time and PID
                 double random_runtime = 1 + ((double)rand() / RAND_MAX) * (t - 1);
 
                 // Convert runtime to sec/nano
@@ -356,6 +305,57 @@ int main(int argc, char *argv[]) {
                     }
                 }
             }
+        }
+
+        // Choose next worker
+        int found = 0;
+
+        for(int k = 0; k < MAX_PCB; k++){
+            current = (current + 1) % MAX_PCB;
+            if(table[current].occupied){
+                found = 1;
+                break;
+            }
+        }
+
+        if(!found){ 
+            continue;
+        }
+
+        // Send message
+        msg.mtype = table[current].pid;
+        msg.intData = 1;
+
+        if (msgsnd(msqid, &msg, sizeof(msgbuffer) - sizeof(long), 0) == -1) {
+            perror("msgsnd failed");
+            exit(1);
+        }
+
+        printf("OSS: Sending message to worker %d PID %d at %d:%d\n",
+            current, table[current].pid, *sec, *nano);
+        fprintf(f, "OSS: Sending message to worker %d PID %d at %d:%d\n",
+            current, table[current].pid, *sec, *nano);
+        
+        table[current].messages_sent++;
+        total_messages_sent++;
+
+        // Recieve response
+        msgrcv(msqid, &msg, sizeof(msgbuffer) - sizeof(long), 1, 0);
+
+        printf("OSS: Received message from worker %d PID %d\n",
+            current, table[current].pid);
+        fprintf(f, "OSS: Received message from worker %d PID %d\n",
+            current, table[current].pid);
+        
+        // Terminating Child
+        if(msg.intData == 0){
+            printf("OSS: Worker %d terminating\n", table[current].pid);
+            fprintf(f, "OSS: Worker %d terminating\n", table[current].pid);
+
+            waitpid(table[current].pid, NULL, 0);
+
+            table[current].occupied = 0;
+            running--;
         }
     }
 
