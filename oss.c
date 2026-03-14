@@ -81,8 +81,8 @@ int main(int argc, char *argv[]) {
                 printf("Usage: %s [-h] [-n proc] [-s simul] [-t timelimitForChildren] [-i intervalInSecondsToLaunchChildren] [-f logfile]\n", argv[0]);
                 printf("  -h Display help message and exit\n");
                 printf("  -n proc   Total number of child processes to launch\n");
-				printf("  -s simul  Maximum number of children running simultaneously\n");
-				printf("  -t iter   Upper bound of simulated time each child runs\n");
+                printf("  -s simul  Maximum number of children running simultaneously\n");
+				        printf("  -t iter   Upper bound of simulated time each child runs\n");
                 printf("  -i sec    Interval in simulated seconds to launch new children\n");
                 printf("  -f file   Log output to specified file\n");
                 return 0;
@@ -106,8 +106,8 @@ int main(int argc, char *argv[]) {
                 printf("Usage: %s [-h] [-n proc] [-s simul] [-t timelimitForChildren] [-i intervalInSecondsToLaunchChildren] [-f logfile]\n", argv[0]);
                 printf("  -h Display help message and exit\n");
                 printf("  -n proc   Total number of child processes to launch\n");
-				printf("  -s simul  Maximum number of children running simultaneously\n");
-				printf("  -t iter   Upper bound of simulated time each child runs\n");
+				        printf("  -s simul  Maximum number of children running simultaneously\n");
+				        printf("  -t iter   Upper bound of simulated time each child runs\n");
                 printf("  -i sec    Interval in simulated seconds to launch new children\n");
                 printf("  -f file   Log output to specified file\n");
                 return 1;
@@ -192,6 +192,9 @@ int main(int argc, char *argv[]) {
     int current = -1;
     msgbuffer msg;
 
+    // Initialize last print time to -1 to ensure first print at time 0
+    int last_print_sec = -1;
+
     // Main scheduling loop
     while (total_launched < n || running > 0) {
 
@@ -201,10 +204,10 @@ int main(int argc, char *argv[]) {
             (*sec)++;
             *nano -= BILLION;
         }
-        
 
         // Print and log process table every 0.5 seconds
-        if (*nano % 500000000 == 0) {
+        if (*sec > last_print_sec) {
+            last_print_sec = *sec;
 
             printf("\nOSS PID:%d SysClockS:%d SysClockNano:%d\n",
                    getpid(), *sec, *nano);
@@ -340,7 +343,10 @@ int main(int argc, char *argv[]) {
         total_messages_sent++;
 
         // Recieve response
-        msgrcv(msqid, &msg, sizeof(msgbuffer) - sizeof(long), 1, 0);
+        if (msgrcv(msqid, &msg, sizeof(msgbuffer) - sizeof(long), 1, 0) == -1) {
+            perror("OSS msgrcv failed");
+            exit(1);
+        }
 
         printf("OSS: Received message from worker %d PID %d\n",
             current, table[current].pid);
@@ -366,7 +372,7 @@ int main(int argc, char *argv[]) {
     // Log final report to file
     fprintf(f, "\nOSS PID:%d Terminating\n", getpid());
     fprintf(f, "%d workers were launched and terminated\n", total_launched);
-    fprintf(f, " %d messages were sent to children\n", total_messages_sent);
+    fprintf(f, "%d messages were sent to children\n", total_messages_sent);
 
     // Cleanup
     shmdt(clockptr);

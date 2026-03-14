@@ -94,8 +94,6 @@ int main(int argc, char *argv[]) {
 
     // Main loop to check time and print status
     while (1) {
-        buf.mtype = 1; // Set message type to 1 for worker messages
-
         // Wait for a message from the parent befor checking time and printing status
         if (msgrcv(msqid, &buf, sizeof(msgbuffer)-sizeof(long), getpid(), 0) == -1) {
             perror("Failed to recieve message from parent\n");
@@ -107,8 +105,9 @@ int main(int argc, char *argv[]) {
         // Check the clock against the termination time
         if (*sec > term_sec || (*sec == term_sec && *nano >= term_nano)) {
             printf("WORKER PID:%d PPID:%d\n", getpid(), getppid());
-            printf("SysClockS:%d SysClockNano:%d TermTimeS:%d TermTimeNano:%d\n", start_sec, start_nano, term_sec, term_nano);
+            printf("SysClockS:%d SysClockNano:%d TermTimeS:%d TermTimeNano:%d\n", *sec, *nano, term_sec, term_nano);
             printf("--Terminating after %d recieved messages.\n", messages_recieved);
+            buf.mtype = 1; // Set message type to 1 for worker messages
             buf.intData = 0; // Set intData to 0 to indicate termination to the parent
             
             // Send a message back to the parent  
@@ -125,13 +124,15 @@ int main(int argc, char *argv[]) {
             printf("SysClockS:%d SysClockNano:%d TermTimeS:%d TermTimeNano:%d\n", *sec, *nano, term_sec, term_nano);
             printf("--%d messages recieved from oss\n", messages_recieved);
             last_printed_sec = *sec;
-            buf.intData = 1; // Set intData to 1 to indicate still running to the parent
-        
-            // Send a message back to the parent  
-            if (msgsnd(msqid, &buf, sizeof(msgbuffer)-sizeof(long), 0) == -1) {
-                perror("Failed to send msgsnd to parent.\n");
-                exit(1);
-            }
+        }
+
+        buf.mtype = 1; // Set message type to 1 for worker messages
+        buf.intData = 1; // Set intData to 1 to indicate still running to the parent
+
+        // Send a message back to the parent  
+        if (msgsnd(msqid, &buf, sizeof(msgbuffer)-sizeof(long), 0) == -1) {
+            perror("Failed to send msgsnd to parent.\n");
+            exit(1);
         }
     }
 
