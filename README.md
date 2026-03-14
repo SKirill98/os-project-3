@@ -2,11 +2,11 @@ Name: Kirill Slabun
 
 Date: 02/25/2026
 
-Environment: vi, VS Code, and MobaTextEditor
+Environment: VS Code, and MobaTextEditor
 
 How to compile the project: Type ’make’
 
-Example of how to run the project: 
+Example of how to run the project: ./oss -n 10 -s 4 -t 4 -i 0.2 -f logFile.txt
 
 Generative AI used: non
 
